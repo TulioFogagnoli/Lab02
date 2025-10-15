@@ -85,7 +85,11 @@ void Error_Handler(void);
 #define MP_SDA_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
-
+typedef struct {
+    float accel_x, accel_y, accel_z;
+    float gyro_x, gyro_y, gyro_z;
+    uint32_t distance_mm;
+} SensorData_t;
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

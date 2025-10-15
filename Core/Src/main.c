@@ -24,6 +24,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <string.h>
+#include <stdio.h>
 #include "mpu6050.h"
 #include "SR04.h"
 /* USER CODE END Includes */
@@ -61,6 +62,10 @@ osThreadId SDCardTaskHandle;
 osThreadId SensorsTaskHandle;
 osThreadId DisplayTaskHandle;
 osThreadId EventDetectTaskHandle;
+
+sr04_t sr04_sensor;
+
+osMessageQId sensorDataQueueHandle;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -123,8 +128,14 @@ int main(void)
   MX_USART1_UART_Init();
   MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
+
+  sr04_sensor.trig_port = HC_TRIG_GPIO_Port; // Ex: GPIOA
+  sr04_sensor.trig_pin = HC_TRIG_Pin;       // Ex: GPIO_PIN_1
+  sr04_sensor.echo_htim = &htim1;           // Handle do Timer
+  sr04_sensor.echo_channel = TIM_CHANNEL_1; // Canal do Timer
+
   mpu6050_init(); // Assumindo que o MPU6050 usa o I2C1
-  sr04_init(&htim1);    // Assumindo que o HC-SR04 usa o TIM1 para a medição de tempo
+  sr04_init(&sr04_sensor);    // Assumindo que o HC-SR04 usa o TIM1 para a medição de tempo
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -140,22 +151,23 @@ int main(void)
   /* USER CODE END RTOS_TIMERS */
 
   /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
+  osMessageQDef(sensorDataQueue, 1, sizeof(SensorData_t));
+  sensorDataQueueHandle = osMessageCreate(osMessageQ(sensorDataQueue), NULL);
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
   /* definition and creation of defaultTask */
-  osThreadDef(SDCardTask, StartSDCardTask, osPriorityNormal, 0, 1024);
+  osThreadDef(SDCardTask, StartSDCardTask, osPriorityAboveNormal, 0, 1024);
   SDCardTaskHandle = osThreadCreate(osThread(SDCardTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  osThreadDef(SensorsTask, StartSensorsTask, osPriorityHigh, 0, 254);
+  osThreadDef(SensorsTask, StartSensorsTask, osPriorityNormal, 0, 512);
   SensorsTaskHandle = osThreadCreate(osThread(SensorsTask), NULL);
 
-  osThreadDef(DisplayTask, StartDisplayTask, osPriorityNormal, 0, 128);
+  osThreadDef(DisplayTask, StartDisplayTask, osPriorityNormal, 0, 512);
   DisplayTaskHandle = osThreadCreate(osThread(DisplayTask), NULL);
 
-  osThreadDef(EventDetectTask, StartEventDetectTask, osPriorityAboveNormal, 0, 128);
+  osThreadDef(EventDetectTask, StartEventDetectTask, osPriorityAboveNormal, 0, 512);
   EventDetectTaskHandle = osThreadCreate(osThread(EventDetectTask), NULL);
 
   /* USER CODE END RTOS_THREADS */
@@ -493,40 +505,87 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+  // Verifica se a interrupção veio do timer correto (o que está ligado ao HC-SR04)
+  if (htim->Instance == sr04_sensor.echo_htim->Instance)
+  {
+    // Chama a função que trata a lógica de captura e cálculo da distância
+    sr04_read_distance(&sr04_sensor);
+  }
+}
+
 void StartEventDetectTask(void const * argument)
 {
-}
-
-void StartDisplayTask(void const * argument)
-{
-}
-
-void StartSensorsTask(void const * argument)
-{
-  /* USER CODE BEGIN StartSensorReadTask */
-  mpu6050_raw_t mpu_data;
-  sr04_t distance;
+  /* USER CODE BEGIN StartEventDetectTask */
+  SensorData_t received_data;
+  osEvent event;
+  char uart_buf[200];
 
   /* Infinite loop */
   for(;;)
   {
-    // 1. Ler dados do MPU-6050 (Acelerómetro e Giroscópio)
-    mpu6050_read_all(&mpu_data);
+    // --- RECEBE DADOS DA FILA ---
+    // A tarefa ficará bloqueada aqui até que novos dados cheguem
+    event = osMessageGet(sensorDataQueueHandle, osWaitForever);
 
-    // 2. Ler dados do HC-SR04 (Distância)
-    sr04_read_distance(&distance);
+    if (event.status == osEventMessage)
+    {
+      // Copia os dados recebidos para a struct local
+      received_data = *(SensorData_t*)event.value.p;
 
-    // Por agora, vamos apenas imprimir os dados para depuração.
-    // Mais tarde, enviaremos estes dados para a vEventProcessingTask.
-    printf("Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f | Dist: %.2f cm\r\n",
-           mpu_data.ax, mpu_data.ay, mpu_data.az,
-           mpu_data.gx, mpu_data.gy, mpu_data.gz,
-           distance.distance);
+      // Imprime os dados recebidos para confirmar o funcionamento
+      sprintf(uart_buf, "Received | Accel Z: %.2f | Dist: %lu mm\r\n",
+             received_data.accel_z,
+             received_data.distance_mm);
+      HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, strlen(uart_buf), HAL_MAX_DELAY);
 
-    // Pausa a tarefa pela frequência desejada (ex: 100ms)
-    osDelay(100);
+      //machine state
+    }
   }
-  /* USER CODE END StartSensorReadTask */
+
+}
+
+void StartDisplayTask(void const * argument)
+{
+  osEvent event;
+  event = osMessageGet(sensorDataQueueHandle, osWaitForever);
+}
+
+void StartSensorsTask(void const * argument)
+{
+  mpu6050_raw_t mpu_raw_data;
+  SensorData_t current_sensor_data; // Struct local para os dados
+  char uart_buf[200];
+
+  /* Infinite loop */
+  for(;;)
+  {
+    sr04_trigger(&sr04_sensor);
+    osDelay(50);
+    mpu6050_read_all(&mpu_raw_data);
+
+    // Preenche a struct com os dados convertidos
+    current_sensor_data.accel_x = mpu6050_accel_g(mpu_raw_data.ax);
+    current_sensor_data.accel_y = mpu6050_accel_g(mpu_raw_data.ay);
+    current_sensor_data.accel_z = mpu6050_accel_g(mpu_raw_data.az);
+    current_sensor_data.gyro_x = mpu6050_gyro_dps(mpu_raw_data.gx);
+    current_sensor_data.gyro_y = mpu6050_gyro_dps(mpu_raw_data.gy);
+    current_sensor_data.gyro_z = mpu6050_gyro_dps(mpu_raw_data.gz);
+    current_sensor_data.distance_mm = sr04_sensor.distance;
+
+    // --- ENVIA OS DADOS PARA A FILA ---
+    // O osMessagePut substitui o conteúdo da fila (já que o tamanho é 1)
+    osMessagePut(sensorDataQueueHandle, (uint32_t)&current_sensor_data, 0);
+
+    // (Opcional) Manter a depuração via UART para verificar se a leitura ainda funciona
+    sprintf(uart_buf, "Sent | Accel Z: %.2f | Dist: %lu mm\r\n",
+           current_sensor_data.accel_z,
+           current_sensor_data.distance_mm);
+    HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, strlen(uart_buf), HAL_MAX_DELAY);
+
+    osDelay(50);
+  }
 }
 
 void StartSDCardTask(void const * argument)
