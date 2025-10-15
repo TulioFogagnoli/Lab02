@@ -24,6 +24,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <string.h>
+#include "mpu6050.h"
+#include "SR04.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -70,7 +72,10 @@ static void MX_SDIO_SD_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_USART1_UART_Init(void);
-void StartDefaultTask(void const * argument);
+void StartEventDetectTask(void const * argument);
+void StartDisplayTask(void const * argument);
+void StartSensorsTask(void const * argument);
+void StartSDCardTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -118,7 +123,8 @@ int main(void)
   MX_USART1_UART_Init();
   MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
-
+  mpu6050_init(); // Assumindo que o MPU6050 usa o I2C1
+  sr04_init(&htim1);    // Assumindo que o HC-SR04 usa o TIM1 para a medição de tempo
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -272,15 +278,6 @@ static void MX_SDIO_SD_Init(void)
   hsd.Init.HardwareFlowControl = SDIO_HARDWARE_FLOW_CONTROL_ENABLE;
   hsd.Init.ClockDiv = 2;
   /* USER CODE BEGIN SDIO_Init 2 */
-  // if (HAL_SD_Init(&hsd) != HAL_OK)
-  // {
-	// Error_Handler();
-  // }
-  // if (HAL_SD_ConfigWideBusOperation(&hsd, SDIO_BUS_WIDE_4B) != HAL_OK)
-  // {
-  // 	Error_Handler();
-  // }
-  //__HAL_RCC_SDIO_CLK_ENABLE();
   /* USER CODE END SDIO_Init 2 */
 
 }
@@ -506,6 +503,30 @@ void StartDisplayTask(void const * argument)
 
 void StartSensorsTask(void const * argument)
 {
+  /* USER CODE BEGIN StartSensorReadTask */
+  mpu6050_raw_t mpu_data;
+  sr04_t distance;
+
+  /* Infinite loop */
+  for(;;)
+  {
+    // 1. Ler dados do MPU-6050 (Acelerómetro e Giroscópio)
+    mpu6050_read_all(&mpu_data);
+
+    // 2. Ler dados do HC-SR04 (Distância)
+    sr04_read_distance(&distance);
+
+    // Por agora, vamos apenas imprimir os dados para depuração.
+    // Mais tarde, enviaremos estes dados para a vEventProcessingTask.
+    printf("Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f | Dist: %.2f cm\r\n",
+           mpu_data.ax, mpu_data.ay, mpu_data.az,
+           mpu_data.gx, mpu_data.gy, mpu_data.gz,
+           distance.distance);
+
+    // Pausa a tarefa pela frequência desejada (ex: 100ms)
+    osDelay(100);
+  }
+  /* USER CODE END StartSensorReadTask */
 }
 
 void StartSDCardTask(void const * argument)

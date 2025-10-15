@@ -1,0 +1,9 @@
+../Core/Src/mpu6050.c:4:12:i2c_timeout	16	static
+../Core/Src/mpu6050.c:9:6:i2c1_init_100k	24	static
+../Core/Src/mpu6050.c:49:12:i2c1_start_addr	24	static
+../Core/Src/mpu6050.c:69:13:i2c1_stop	4	static
+../Core/Src/mpu6050.c:73:5:i2c1_write_reg	24	static
+../Core/Src/mpu6050.c:89:5:i2c1_read_reg	24	static
+../Core/Src/mpu6050.c:115:5:i2c1_read_multi	32	static
+../Core/Src/mpu6050.c:164:5:mpu6050_init	8	static
+../Core/Src/mpu6050.c:175:5:mpu6050_read_all	32	static

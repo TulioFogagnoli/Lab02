@@ -1,0 +1,3 @@
+../Core/Src/SR04.c:9:6:sr04_init	16	static
+../Core/Src/SR04.c:21:6:sr04_trigger	24	static,ignoring_inline_asm
+../Core/Src/SR04.c:29:6:sr04_read_distance	72	static
