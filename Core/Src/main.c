@@ -27,6 +27,8 @@
 #include <stdio.h>
 #include "mpu6050.h"
 #include "SR04.h"
+#include "st7789.h"
+#include "font.h"   
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -66,6 +68,10 @@ osThreadId EventDetectTaskHandle;
 sr04_t sr04_sensor;
 
 osMessageQId sensorDataQueueHandle;
+
+
+char uart_buf_main[100]; // <-- ADICIONAR: Buffer para debug no main
+int mpu_init_status = 99;  // <-- ADICIONAR: Status da inicialização do MPU
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -129,13 +135,43 @@ int main(void)
   MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
 
+  ST7789_Init(); 
+  ST7789_FillScreen(ST7789_BLACK);
+
   sr04_sensor.trig_port = HC_TRIG_GPIO_Port; // Ex: GPIOA
   sr04_sensor.trig_pin = HC_TRIG_Pin;       // Ex: GPIO_PIN_1
   sr04_sensor.echo_htim = &htim1;           // Handle do Timer
   sr04_sensor.echo_channel = TIM_CHANNEL_1; // Canal do Timer
 
-  mpu6050_init(); // Assumindo que o MPU6050 usa o I2C1
-  sr04_init(&sr04_sensor);    // Assumindo que o HC-SR04 usa o TIM1 para a medição de tempo
+  sr04_init(&sr04_sensor);    // Assumindo que o HC-SR04 usa o TIM1
+  
+  // --- TESTE DE DEBUG I2C (SCANNER) ---
+  sprintf(uart_buf_main, "Iniciando...\r\nIniciando Scan I2C...\r\n");
+  HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf_main, strlen(uart_buf_main), HAL_MAX_DELAY);
+  
+  // 1. Testa o endereço 0x68 (AD0 = GND)
+  HAL_StatusTypeDef status_68 = HAL_I2C_IsDeviceReady(&hi2c1, (0x68 << 1), 3, 100);
+  
+  sprintf(uart_buf_main, "Scan: Endereco 0x68... Status: %d\r\n", status_68);
+  HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf_main, strlen(uart_buf_main), HAL_MAX_DELAY);
+
+  // 2. Testa o endereço 0x69 (AD0 = VCC/Flutuando)
+  HAL_StatusTypeDef status_69 = HAL_I2C_IsDeviceReady(&hi2c1, (0x69 << 1), 3, 100);
+  
+  sprintf(uart_buf_main, "Scan: Endereco 0x69... Status: %d\r\n", status_69);
+  HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf_main, strlen(uart_buf_main), HAL_MAX_DELAY);
+
+  // 3. Tenta inicializar o MPU6050 (que está configurado para 0x68)
+  mpu_init_status = mpu6050_init(); 
+  
+  if (mpu_init_status != 0) {
+      sprintf(uart_buf_main, "Falha no mpu6050_init! Codigo: %d\r\n", mpu_init_status);
+      HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf_main, strlen(uart_buf_main), HAL_MAX_DELAY);
+  } else {
+      sprintf(uart_buf_main, "MPU6050 Init OK! (WHO_AM_I OK no 0x68)\r\n");
+      HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf_main, strlen(uart_buf_main), HAL_MAX_DELAY);
+  }
+  // --- FIM DO TESTE DE DEBUG ---    
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -520,71 +556,129 @@ void StartEventDetectTask(void const * argument)
   /* USER CODE BEGIN StartEventDetectTask */
   SensorData_t received_data;
   osEvent event;
-  char uart_buf[200];
+  char uart_buf[256];
 
   /* Infinite loop */
   for(;;)
   {
     // --- RECEBE DADOS DA FILA ---
-    // A tarefa ficará bloqueada aqui até que novos dados cheguem
     event = osMessageGet(sensorDataQueueHandle, osWaitForever);
 
     if (event.status == osEventMessage)
     {
-      // Copia os dados recebidos para a struct local
       received_data = *(SensorData_t*)event.value.p;
 
-      // Imprime os dados recebidos para confirmar o funcionamento
-      sprintf(uart_buf, "Received | Accel Z: %.2f | Dist: %lu mm\r\n",
-             received_data.accel_z,
+      // --- Transmissão UART ÚNICA com todos os dados ---
+      sprintf(uart_buf, 
+             "AX:%.2f|AY:%.2f|AZ:%.2f|GX:%.2f|GY:%.2f|GZ:%.2f|Dist:%lu\r\n",
+             received_data.accel_x, received_data.accel_y, received_data.accel_z,
+             received_data.gyro_x, received_data.gyro_y, received_data.gyro_z,
              received_data.distance_mm);
+      
       HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, strlen(uart_buf), HAL_MAX_DELAY);
-
-      //machine state
     }
   }
-
+  /* USER CODE END StartEventDetectTask */
 }
 
 void StartDisplayTask(void const * argument)
 {
+  /* USER CODE BEGIN StartDisplayTask */
+  SensorData_t display_data;
   osEvent event;
-  event = osMessageGet(sensorDataQueueHandle, osWaitForever);
+  char display_buf[64]; // Buffer para formatar as strings
+
+  /* Infinite loop */
+  for(;;)
+  {
+    // Espera por novos dados dos sensores (bloqueia aqui)
+    event = osMessageGet(sensorDataQueueHandle, osWaitForever);
+
+    if (event.status == osEventMessage)
+    {
+      display_data = *(SensorData_t*)event.value.p;
+
+      sprintf(display_buf, "AX: %.2f g ", display_data.accel_x);
+      ST7789_DrawText(10, 10, display_buf, ST7789_WHITE, ST7789_BLACK, ST7789_SIZE);
+      
+      sprintf(display_buf, "AY: %.2f g ", display_data.accel_y);
+      ST7789_DrawText(10, 30, display_buf, ST7789_WHITE, ST7789_BLACK, ST7789_SIZE);
+
+      sprintf(display_buf, "AZ: %.2f g ", display_data.accel_z);
+      ST7789_DrawText(10, 50, display_buf, ST7789_WHITE, ST7789_BLACK, ST7789_SIZE);
+
+      sprintf(display_buf, "GX: %.1f dps ", display_data.gyro_x);
+      ST7789_DrawText(10, 80, display_buf, ST7789_WHITE, ST7789_BLACK, ST7789_SIZE);
+
+      sprintf(display_buf, "GY: %.1f dps ", display_data.gyro_y);
+      ST7789_DrawText(10, 100, display_buf, ST7789_WHITE, ST7789_BLACK, ST7789_SIZE);
+
+      sprintf(display_buf, "GZ: %.1f dps ", display_data.gyro_z);
+      ST7789_DrawText(10, 120, display_buf,  ST7789_WHITE, ST7789_BLACK, ST7789_SIZE);
+
+      sprintf(display_buf, "Dist: %lu mm ", display_data.distance_mm);
+      ST7789_DrawText(10, 150, display_buf, ST7789_WHITE, ST7789_BLACK, ST7789_SIZE);
+    }
+  }
+  /* USER CODE END StartDisplayTask */
 }
 
 void StartSensorsTask(void const * argument)
 {
   mpu6050_raw_t mpu_raw_data;
   SensorData_t current_sensor_data; // Struct local para os dados
-  char uart_buf[200];
+  char uart_buf_task[100]; // Buffer local
+
+  // Se a init falhou, esta task não deve rodar
+  if (mpu_init_status != 0)
+  {
+    sprintf(uart_buf_task, "Task de Sensor parada (Init falhou).\r\n");
+    HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf_task, strlen(uart_buf_task), HAL_MAX_DELAY);
+    while(1)
+    {
+      // Pisca o LED 3 (PD13) para indicar erro grave
+      HAL_GPIO_TogglePin(LED_3_GPIO_Port, LED_3_Pin); 
+      osDelay(200);
+    }
+  }
 
   /* Infinite loop */
   for(;;)
   {
-    sr04_trigger(&sr04_sensor);
-    osDelay(50);
-    mpu6050_read_all(&mpu_raw_data);
+    // --- PASSO 1: LER O MPU ---
+    if (mpu6050_read_all(&mpu_raw_data) != 0)
+    {
+       // Erro na leitura I2C (ex: cabo desconectado)
+       memset(&mpu_raw_data, 0, sizeof(mpu6050_raw_t));
+       HAL_GPIO_WritePin(LED_3_GPIO_Port, LED_3_Pin, GPIO_PIN_SET); // Acende LED 3 (Erro)
+    }
+    else
+    {
+       HAL_GPIO_WritePin(LED_3_GPIO_Port, LED_3_Pin, GPIO_PIN_RESET); // Apaga LED 3 (OK)
+    }
 
-    // Preenche a struct com os dados convertidos
+    // --- PASSO 2: LER O HC-SR04 ---
+    sr04_trigger(&sr04_sensor);
+    // A ISR (HAL_TIM_IC_CaptureCallback) vai atualizar o valor
+    
+    // --- PASSO 3: PREENCHER STRUCT ---
     current_sensor_data.accel_x = mpu6050_accel_g(mpu_raw_data.ax);
     current_sensor_data.accel_y = mpu6050_accel_g(mpu_raw_data.ay);
     current_sensor_data.accel_z = mpu6050_accel_g(mpu_raw_data.az);
     current_sensor_data.gyro_x = mpu6050_gyro_dps(mpu_raw_data.gx);
     current_sensor_data.gyro_y = mpu6050_gyro_dps(mpu_raw_data.gy);
     current_sensor_data.gyro_z = mpu6050_gyro_dps(mpu_raw_data.gz);
+    
+    // Precisamos de um pequeno delay para a ISR do timer rodar
+    osDelay(50); // Delay para a medição do HC-SR04 ser capturada
     current_sensor_data.distance_mm = sr04_sensor.distance;
 
-    // --- ENVIA OS DADOS PARA A FILA ---
-    // O osMessagePut substitui o conteúdo da fila (já que o tamanho é 1)
+    // --- PASSO 4: ENVIAR PARA FILA ---
+    // A StartEventDetectTask vai consumir e imprimir
     osMessagePut(sensorDataQueueHandle, (uint32_t)&current_sensor_data, 0);
 
-    // (Opcional) Manter a depuração via UART para verificar se a leitura ainda funciona
-    sprintf(uart_buf, "Sent | Accel Z: %.2f | Dist: %lu mm\r\n",
-           current_sensor_data.accel_z,
-           current_sensor_data.distance_mm);
-    HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, strlen(uart_buf), HAL_MAX_DELAY);
-
-    osDelay(50);
+    // Delay total da task. (50ms + 150ms = 200ms)
+    osDelay(150); 
   }
 }
 
